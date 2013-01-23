@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq.Expressions;
 using NHibernate.Hql.Ast;
 using NHibernate.Linq.Clauses;
@@ -206,6 +207,11 @@ namespace NHibernate.Linq.Visitors
 			if (visitor.ProjectionExpression != null)
 			{
 				_hqlTree.AddItemTransformer(visitor.ProjectionExpression);
+			}
+
+			if (visitor.ListTransformer != null)
+			{
+				_hqlTree.AddListTransformer(visitor.ListTransformer);
 			}
 
 			_hqlTree.AddSelectClause(_hqlTree.TreeBuilder.Select(visitor.GetHqlNodes()));

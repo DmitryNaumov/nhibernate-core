@@ -311,6 +311,7 @@
     <Compile Include="Linq\Visitors\ResultOperatorAndOrderByJoinDetector.cs" />
     <Compile Include="Linq\Visitors\ResultOperatorProcessors\ProcessTimeout.cs" />
     <Compile Include="Linq\Visitors\ResultOperatorProcessors\ProcessAggregateFromSeed.cs" />
+    <Compile Include="Linq\Visitors\SelectClauseRewriter.cs" />
     <Compile Include="Linq\Visitors\SelectJoinDetector.cs" />
     <Compile Include="Linq\Visitors\SelectClauseNominator.cs" />
     <Compile Include="Linq\Visitors\VisitorUtil.cs" />

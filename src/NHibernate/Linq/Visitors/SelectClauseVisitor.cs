@@ -22,6 +22,8 @@ namespace NHibernate.Linq.Visitors
 
 		public LambdaExpression ProjectionExpression { get; private set; }
 
+		public LambdaExpression ListTransformer { get; private set; }
+
 		public IEnumerable<HqlExpression> GetHqlNodes()
 		{
 			return _hqlTreeNodes;
@@ -32,12 +34,22 @@ namespace NHibernate.Linq.Visitors
 			// First, find the sub trees that can be expressed purely in HQL
 			_hqlNodes = new SelectClauseHqlNominator(_parameters).Nominate(expression);
 
+			var selectClauseModifier = new SelectClauseRewriter(_inputParameter);
+			expression = selectClauseModifier.PreProcess(expression);
+
 			// Now visit the tree
 			Expression projection = VisitExpression(expression);
+
+			projection = selectClauseModifier.PostProcess(projection);
 
 			if ((projection != expression) && !_hqlNodes.Contains(expression))
 			{
 				ProjectionExpression = Expression.Lambda(projection, _inputParameter);
+			}
+
+			if (selectClauseModifier.ListTransformer != null)
+			{
+				ListTransformer = Expression.Lambda(selectClauseModifier.ListTransformer, _inputParameter);
 			}
 
 			// Finally, handle any boolean results in the output nodes
