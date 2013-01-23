@@ -35,6 +35,12 @@ namespace NHibernate.UnitTest.Linq
 		[TestFixture]
 		public class PreProcessTests
 		{
+			class ExpandedWrapper<T1, T2>
+			{
+				public T1 A { get; set; }
+				public T2 B { get; set; }
+			}
+
 			private SelectClauseRewriter _cut;
 			private IQuerySource _querySource;
 
@@ -47,7 +53,7 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
-			public void InjectsCollectionOwner()
+			public void AddsCollectionOwner()
 			{
 				var expression = Expression.Property(new QuerySourceReferenceExpression(_querySource), Customer.OrderSetProperty);
 				var result = _cut.PreProcess(expression);
@@ -56,12 +62,12 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
-			public void InjectsCollectionOwner2()
+			public void AddsCollectionOwner2()
 			{
 				var customer = new Customer();
-				var anonymousType = new {customer.OrderSet};
+				var projection = new {customer.OrderSet};
 
-				var expression = Expression.New(GetConstructor(anonymousType),
+				var expression = Expression.New(GetConstructor(projection),
 				                                Expression.Property(new QuerySourceReferenceExpression(_querySource),
 				                                                    Customer.OrderSetProperty));
 
@@ -71,13 +77,13 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
-			public void DoesNotInjectIfCollectionOwnerPresentInProjection()
+			public void DoesNotAddCollectionOwnerWhenPresentInAnonymousProjection()
 			{
 				var customer = new Customer();
-				var anonymousType = new {customer, customer.OrderSet};
+				var projection = new {customer, customer.OrderSet};
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
-				var expression = Expression.New(GetConstructor(anonymousType),
+				var expression = Expression.New(GetConstructor(projection),
 				                                querySourceExpression,
 				                                Expression.Property(querySourceExpression, Customer.OrderSetProperty));
 
@@ -87,13 +93,33 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
+			public void DoesNotAddCollectionOwnerWhenPresentInKnownType()
+			{
+				var customer = new Customer();
+				var projection = new ExpandedWrapper<Customer, ISet<Order>> { A = customer, B = customer.OrderSet };
+
+				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
+				var expression = Expression.MemberInit(
+									Expression.New(projection.GetType().GetConstructors()[0]),
+												new MemberBinding[] 
+												{
+													Expression.Bind(projection.GetType().GetProperty("A"), querySourceExpression),
+													Expression.Bind(projection.GetType().GetProperty("B"), Expression.Property(querySourceExpression, Customer.OrderSetProperty)),
+												});
+
+				var result = _cut.PreProcess(expression);
+
+				Assert.AreEqual(typeof(NHibernate.Linq.Tuple<Customer, ISet<Order>>), result.Type);
+			}
+
+			[Test]
 			public void RespectsParameterOrderWhenInjects()
 			{
 				var customer = new Customer();
-				var anonymousType = new {customer.Age, customer.OrderSet, customer.VIP};
+				var projection = new {customer.Age, customer.OrderSet, customer.VIP};
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
-				var expression = Expression.New(GetConstructor(anonymousType),
+				var expression = Expression.New(GetConstructor(projection),
 				                                Expression.Constant(1, typeof (int)),
 				                                Expression.Property(querySourceExpression, Customer.OrderSetProperty),
 				                                Expression.Constant(true, typeof (bool)));
@@ -107,10 +133,10 @@ namespace NHibernate.UnitTest.Linq
 			public void RespectsParameterOrderWhenDoesNotInject()
 			{
 				var customer = new Customer();
-				var anonymousType = new {customer.Age, customer, customer.OrderSet, customer.VIP};
+				var projection = new {customer.Age, customer, customer.OrderSet, customer.VIP};
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
-				var expression = Expression.New(GetConstructor(anonymousType),
+				var expression = Expression.New(GetConstructor(projection),
 				                                Expression.Constant(1, typeof (int)),
 				                                querySourceExpression,
 				                                Expression.Property(querySourceExpression, Customer.OrderSetProperty),

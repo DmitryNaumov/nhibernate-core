@@ -6,6 +6,8 @@ using SharpTestsEx;
 
 namespace NHibernate.Test.Linq
 {
+	using Iesi.Collections.Generic;
+
 	[TestFixture]
 	public class ProjectionsTests : LinqTestCase
 	{
@@ -282,6 +284,22 @@ namespace NHibernate.Test.Linq
 			// done by WCF DS: context.Orders.Expand(o => o.OrderLines) from the client 
 			var query = from o in db.Orders
 						select new { OrderLines = o.OrderLines.ToList() };
+
+			var result = query.ToList();
+			Assert.That(result.Count, Is.Not.EqualTo(0));
+		}
+
+		class ExpandedWrapper<T1, T2>
+		{
+			public T1 A { get; set; }
+			public T2 B { get; set; }
+		}
+
+		[Test]
+		public void ProjectNonAnonymousTypeWithCollection()
+		{
+			var query = from o in db.Orders
+						select new ExpandedWrapper<DomainModel.Northwind.Entities.Order, ISet<DomainModel.Northwind.Entities.OrderLine>> { A = o, B = o.OrderLines };
 
 			var result = query.ToList();
 			Assert.That(result.Count, Is.Not.EqualTo(0));
