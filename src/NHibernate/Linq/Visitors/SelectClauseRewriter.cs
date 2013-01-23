@@ -40,6 +40,8 @@ namespace NHibernate.Linq.Visitors
 					return OnMemberAccess((MemberExpression)expression);
 				case ExpressionType.New:
 					return OnNewExpression((NewExpression)expression);
+				case ExpressionType.MemberInit:
+					return OnMemberInitExpression((MemberInitExpression)expression);
 			}
 
 			return expression;
@@ -87,6 +89,15 @@ namespace NHibernate.Linq.Visitors
 		private Expression OnNewExpression(NewExpression expression)
 		{
 			return TryInjectCollectionOwnerIntoProjection(expression.Arguments.ToArray()) ?? expression;
+		}
+
+		private Expression OnMemberInitExpression(MemberInitExpression expression)
+		{
+			var arguments = new List<Expression>();
+			arguments.AddRange(expression.NewExpression.Arguments);
+			arguments.AddRange(expression.Bindings.Cast<MemberAssignment>().Select(x => x.Expression));
+
+			return TryInjectCollectionOwnerIntoProjection(arguments.ToArray()) ?? expression;
 		}
 
 		private Expression TryInjectCollectionOwnerIntoProjection(params Expression[] expressions)
@@ -211,17 +222,29 @@ namespace NHibernate.Linq.Visitors
 			var values = ExtractValuesFromGroup(inputParameter);
 
 			var resultType = _resultExpression.Type;
-			if (IsCollectionType(resultType))
+			if (_resultExpression.NodeType == ExpressionType.MemberAccess)
 			{
 				return Expression.Lambda(values[0], inputParameter);
 			}
+			else if (_resultExpression.NodeType == ExpressionType.MemberInit)
+			{
+				var resultExpression = (MemberInitExpression) _resultExpression;
 
-			// TODO: bind to right constructor
-			var ctor = resultType.GetConstructors().First(ci => ci.GetParameters().Length > 0);
+				// TODO: constructor may also have some arguments
+				int n = 0;
+				var bindings = resultExpression.Bindings.Select(mb => Expression.Bind(mb.Member, values[n++])).ToArray();
+				var memberInitExpression = Expression.MemberInit(resultExpression.NewExpression, bindings);
 
-			var newCollection = Expression.Lambda(Expression.New(ctor, values), inputParameter);
+				return Expression.Lambda(memberInitExpression, inputParameter);
+			}
+			else if (_resultExpression.NodeType == ExpressionType.New)
+			{
+				var ctor = resultType.GetConstructor(values.Select(x => x.Type).ToArray());
+				var newCollection = Expression.Lambda(Expression.New(ctor, values), inputParameter);
+				return newCollection;
+			}
 
-			return newCollection;
+			throw new NotImplementedException();
 		}
 
 		private Expression[] ExtractValuesFromGroup(ParameterExpression inputParameter)

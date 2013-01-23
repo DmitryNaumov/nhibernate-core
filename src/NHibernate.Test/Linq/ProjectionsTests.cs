@@ -296,13 +296,14 @@ namespace NHibernate.Test.Linq
 		}
 
 		[Test]
-		public void ProjectNonAnonymousTypeWithCollection()
+		public void ProjectKnownTypeWithCollection()
 		{
 			var query = from o in db.Orders
 						select new ExpandedWrapper<DomainModel.Northwind.Entities.Order, ISet<DomainModel.Northwind.Entities.OrderLine>> { A = o, B = o.OrderLines };
 
 			var result = query.ToList();
 			Assert.That(result.Count, Is.Not.EqualTo(0));
+			Assert.That(result[0].A.OrderLines, Is.EqualTo(result[0].B));
 		}
 
 		[Test]
