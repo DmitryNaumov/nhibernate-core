@@ -9,7 +9,7 @@ using Remotion.Linq.Clauses.Expressions;
 
 namespace NHibernate.Linq.Visitors
 {
-	internal sealed class SelectClauseRewriter
+	public sealed class SelectClauseRewriter
 	{
 		private static readonly MethodInfo CastMethod = typeof(Enumerable).GetMethod("Cast", BindingFlags.Public | BindingFlags.Static);
 		private static readonly MethodInfo GroupByMethod = ReflectionHelper.GetMethodDefinition(() => Enumerable.GroupBy(Enumerable.Empty<int>(), i => i, i => i));
@@ -109,8 +109,15 @@ namespace NHibernate.Linq.Visitors
 			{
 				// let's include collection owner into expression
 
-				var ctor = GetTupleConstructor(expression.Member.DeclaringType, expression.Type);
-				projection = Expression.New(ctor, querySource, expression);
+				var typeArgs = new List<System.Type>() { expression.Member.DeclaringType };
+				typeArgs.AddRange(expressions.Select(expr => expr.Type));
+
+				var ctor = GetTupleConstructor(typeArgs.ToArray());
+
+				var ctorArguments = new List<Expression>() { querySource };
+				ctorArguments.AddRange(expressions);
+
+				projection = Expression.New(ctor, ctorArguments);
 
 				_collectionOwnerWasInjected = true;
 				_index++;
@@ -169,9 +176,9 @@ namespace NHibernate.Linq.Visitors
 				case 2:
 					return typeof(Tuple<,>).MakeGenericType(parameters).GetConstructor(parameters);
 				case 3:
-					return typeof(Tuple<,>).MakeGenericType(parameters).GetConstructor(parameters);
+					return typeof(Tuple<,,>).MakeGenericType(parameters).GetConstructor(parameters);
 				case 4:
-					return typeof(Tuple<,>).MakeGenericType(parameters).GetConstructor(parameters);
+					return typeof(Tuple<,,,>).MakeGenericType(parameters).GetConstructor(parameters);
 			}
 
 			throw new ArgumentException("Number of parameters should be greater than 1 and less than 5", "parameters");
