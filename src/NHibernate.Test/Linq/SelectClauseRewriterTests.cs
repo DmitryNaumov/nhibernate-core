@@ -23,13 +23,12 @@ namespace NHibernate.UnitTest.Linq
 		{
 			public static readonly PropertyInfo OrderSetProperty = typeof (Customer).GetProperty("OrderSet");
 			public static readonly PropertyInfo OrderListProperty = typeof(Customer).GetProperty("OrderList");
+			public static readonly PropertyInfo NameProperty = typeof(Customer).GetProperty("Name");
 
 			public ISet<Order> OrderSet { get; set; }
 			public IList<Order> OrderList { get; set; }
 
-			public int Age { get; private set; }
-
-			public bool VIP { get; private set; }
+			public string Name { get; private set; }
 		}
 
 		[TestFixture]
@@ -53,7 +52,7 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
-			public void AddsCollectionOwner()
+			public void ConvertsCollection()
 			{
 				var expression = Expression.Property(new QuerySourceReferenceExpression(_querySource), Customer.OrderSetProperty);
 				var result = _cut.PreProcess(expression);
@@ -62,7 +61,7 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
-			public void AddsCollectionOwner2()
+			public void ConvertsAnonymousType()
 			{
 				var customer = new Customer();
 				var projection = new {customer.OrderSet};
@@ -77,30 +76,31 @@ namespace NHibernate.UnitTest.Linq
 			}
 
 			[Test]
-			public void DoesNotAddCollectionOwnerWhenPresentInAnonymousProjection()
+			public void ConvertsAnonymousType2()
 			{
 				var customer = new Customer();
-				var projection = new {customer, customer.OrderSet};
+				var projection = new { customer, customer.OrderSet };
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
 				var expression = Expression.New(GetConstructor(projection),
-				                                querySourceExpression,
-				                                Expression.Property(querySourceExpression, Customer.OrderSetProperty));
+												querySourceExpression,
+												Expression.Property(querySourceExpression,
+																	Customer.OrderSetProperty));
 
 				var result = _cut.PreProcess(expression);
 
-				Assert.AreEqual(typeof (NHibernate.Linq.Tuple<Customer, ISet<Order>>), result.Type);
+				Assert.AreEqual(typeof(NHibernate.Linq.Tuple<Customer, Customer, ISet<Order>>), result.Type);
 			}
 
 			[Test]
-			public void DoesNotAddCollectionOwnerWhenPresentInKnownType()
+			public void ConvertsKnownType()
 			{
 				var customer = new Customer();
-				var projection = new ExpandedWrapper<Customer, ISet<Order>> { A = customer, B = customer.OrderSet };
+				var projection = new ExpandedWrapper<Customer, ISet<Order>>  { A = customer, B = customer.OrderSet };
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
 				var expression = Expression.MemberInit(
-									Expression.New(projection.GetType().GetConstructors()[0]),
+									Expression.New(GetConstructor(projection)),
 												new MemberBinding[] 
 												{
 													Expression.Bind(projection.GetType().GetProperty("A"), querySourceExpression),
@@ -109,48 +109,70 @@ namespace NHibernate.UnitTest.Linq
 
 				var result = _cut.PreProcess(expression);
 
-				Assert.AreEqual(typeof(NHibernate.Linq.Tuple<Customer, ISet<Order>>), result.Type);
+				Assert.AreEqual(typeof(NHibernate.Linq.Tuple<Customer, Customer, ISet<Order>>), result.Type);
 			}
 
 			[Test]
-			public void RespectsParameterOrderWhenInjects()
+			public void ConvertsKnownTypeSameCollectionTwice()
 			{
 				var customer = new Customer();
-				var projection = new {customer.Age, customer.OrderSet, customer.VIP};
+				var projection = new ExpandedWrapper<ISet<Order>, ISet<Order>> { A = customer.OrderSet, B = customer.OrderSet };
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
-				var expression = Expression.New(GetConstructor(projection),
-				                                Expression.Constant(1, typeof (int)),
-				                                Expression.Property(querySourceExpression, Customer.OrderSetProperty),
-				                                Expression.Constant(true, typeof (bool)));
+				var expression = Expression.MemberInit(
+									Expression.New(GetConstructor(projection)),
+												new MemberBinding[] 
+												{
+													Expression.Bind(projection.GetType().GetProperty("A"), Expression.Property(querySourceExpression, Customer.OrderSetProperty)),
+													Expression.Bind(projection.GetType().GetProperty("B"), Expression.Property(querySourceExpression, Customer.OrderSetProperty)),
+												});
 
 				var result = _cut.PreProcess(expression);
 
-				Assert.AreEqual(typeof (NHibernate.Linq.Tuple<Customer, int, ISet<Order>, bool>), result.Type);
+				Assert.AreEqual(typeof(NHibernate.Linq.Tuple<Customer, ISet<Order>, ISet<Order>>), result.Type);
 			}
 
 			[Test]
-			public void RespectsParameterOrderWhenDoesNotInject()
+			public void ConvertsKnownTypeSameQuerySourceTwice()
 			{
 				var customer = new Customer();
-				var projection = new {customer.Age, customer, customer.OrderSet, customer.VIP};
+				var projection = new ExpandedWrapper<ISet<Order>, IList<Order>> { A = customer.OrderSet, B = customer.OrderList };
 
 				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
-				var expression = Expression.New(GetConstructor(projection),
-				                                Expression.Constant(1, typeof (int)),
-				                                querySourceExpression,
-				                                Expression.Property(querySourceExpression, Customer.OrderSetProperty),
-				                                Expression.Constant(true, typeof (bool)));
+				var expression = Expression.MemberInit(
+									Expression.New(GetConstructor(projection)),
+												new MemberBinding[] 
+												{
+													Expression.Bind(projection.GetType().GetProperty("A"), Expression.Property(querySourceExpression, Customer.OrderSetProperty)),
+													Expression.Bind(projection.GetType().GetProperty("B"), Expression.Property(querySourceExpression, Customer.OrderListProperty)),
+												});
 
 				var result = _cut.PreProcess(expression);
 
-				Assert.AreEqual(typeof (NHibernate.Linq.Tuple<int, Customer, ISet<Order>, bool>), result.Type);
+				Assert.AreEqual(typeof(NHibernate.Linq.Tuple<Customer, ISet<Order>, IList<Order>>), result.Type);
+			}
+
+			[Test]
+			public void DoesNotTreatStringsAsCollection()
+			{
+				var customer = new Customer();
+				var projection = new { customer, customer.Name };
+
+				var querySourceExpression = new QuerySourceReferenceExpression(_querySource);
+				var expression = Expression.New(GetConstructor(projection),
+												querySourceExpression,
+												Expression.Property(querySourceExpression,
+																	Customer.NameProperty));
+
+				var result = _cut.PreProcess(expression);
+
+				Assert.AreEqual(projection.GetType(), result.Type);
 			}
 
 			private ConstructorInfo GetConstructor(object obj)
 			{
 				var type = obj.GetType();
-				return type.GetConstructor(type.GetProperties().Select(pi => pi.PropertyType).ToArray());
+				return type.GetConstructor(type.GetProperties().Select(pi => pi.PropertyType).ToArray()) ?? type.GetConstructors().First();
 			}
 		}
 	}

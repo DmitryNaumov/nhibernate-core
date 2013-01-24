@@ -9,8 +9,67 @@ using Remotion.Linq.Clauses.Expressions;
 
 namespace NHibernate.Linq.Visitors
 {
+	using Remotion.Linq.Parsing;
+
 	public sealed class SelectClauseRewriter
 	{
+		class QuerySourceVisitor : ExpressionTreeVisitor
+		{
+			private List<QuerySourceReferenceExpression> _querySourceReferenceExpressions;
+
+			public List<QuerySourceReferenceExpression> QuerySourceReferenceExpressions
+			{
+				get { return _querySourceReferenceExpressions; }
+			}
+
+
+			protected override Expression VisitMemberExpression(MemberExpression expression)
+			{
+				var querySourceReferenceExpression = expression.Expression as QuerySourceReferenceExpression;
+				if (querySourceReferenceExpression != null)
+				{
+					System.Type memberType = null;
+					
+					var propertyInfo = expression.Member as PropertyInfo;
+					if (propertyInfo != null && IsCollectionType(propertyInfo.PropertyType))
+					{
+						memberType = propertyInfo.PropertyType;
+					}
+
+					var fieldInfo = expression.Member as FieldInfo;
+					if (fieldInfo != null && IsCollectionType(fieldInfo.FieldType))
+					{
+						memberType = fieldInfo.FieldType;
+					}
+
+					if (memberType != null && IsCollectionType(memberType))
+					{
+						var list = _querySourceReferenceExpressions ??
+								   (_querySourceReferenceExpressions = new List<QuerySourceReferenceExpression>());
+
+						list.Add(querySourceReferenceExpression);
+					}
+				}
+
+				return base.VisitMemberExpression(expression);
+			}
+
+			protected override Expression VisitUnknownExpression(Expression expression)
+			{
+				return expression;
+			}
+
+			protected override Expression VisitUnknownNonExtensionExpression(Expression expression)
+			{
+				return expression;
+			}
+
+			private bool IsCollectionType(System.Type type)
+			{
+				return typeof(IEnumerable).IsAssignableFrom(type) && type != typeof(string);
+			}
+		}
+
 		private static readonly MethodInfo CastMethod = typeof(Enumerable).GetMethod("Cast", BindingFlags.Public | BindingFlags.Static);
 		private static readonly MethodInfo GroupByMethod = ReflectionHelper.GetMethodDefinition(() => Enumerable.GroupBy(Enumerable.Empty<int>(), i => i, i => i));
 		private static readonly MethodInfo ToArrayMethod = ReflectionHelper.GetMethodDefinition(() => Enumerable.ToArray(Enumerable.Empty<int>()));
@@ -19,9 +78,7 @@ namespace NHibernate.Linq.Visitors
 		private readonly ParameterExpression _inputParameter;
 
 		private Expression _resultExpression;
-
-		private bool _collectionOwnerWasInjected;
-		private int _index = -1;
+		private List<int> _indicies = new List<int>();
 
 		public SelectClauseRewriter(ParameterExpression inputParameter)
 		{
@@ -49,30 +106,34 @@ namespace NHibernate.Linq.Visitors
 
 		public Expression PostProcess(Expression expression)
 		{
-			var projection = expression as NewExpression;
-			if (projection == null)
+			if (_indicies.Count == 0)
 			{
 				return expression;
 			}
 
-			return PostProcess(projection);
+			return PostProcess(expression as NewExpression) ?? expression;
 		}
 
 		private Expression PostProcess(NewExpression expression)
 		{
-			if (_index == -1)
+			if (expression == null)
 			{
-				return expression;
+				return null;
 			}
 
 			var arguments = expression.Arguments.ToArray();
 
-			// TODO: index of collection
-			arguments[_index] = Expression.Convert(((UnaryExpression)arguments[_index]).Operand,
-			                                  ((UnaryExpression)arguments[_index]).Type.GetGenericArguments()[0]);
+			_indicies.ForEach(index =>
+			{
+				//arguments[index] = Expression.Convert(((UnaryExpression) arguments[index]).Operand, arguments[index].Type.GetGenericArguments()[0]);
+				arguments[index] =
+					Expression.Convert(Expression.ArrayIndex(_inputParameter, Expression.Constant(index, typeof (int))),
+					                   arguments[index].Type.GetGenericArguments()[0]);
+			});
 
 			var typeArguments = arguments.Select(arg => arg.Type).ToArray();
 			var type = expression.Type.GetGenericTypeDefinition().MakeGenericType(typeArguments);
+
 
 			expression = Expression.New(type.GetConstructor(typeArguments), arguments);
 
@@ -83,12 +144,12 @@ namespace NHibernate.Linq.Visitors
 
 		private Expression OnMemberAccess(MemberExpression expression)
 		{
-			return TryInjectCollectionOwnerIntoProjection(expression) ?? expression;
+			return TryConvertProjection(expression) ?? expression;
 		}
 
 		private Expression OnNewExpression(NewExpression expression)
 		{
-			return TryInjectCollectionOwnerIntoProjection(expression.Arguments.ToArray()) ?? expression;
+			return TryConvertProjection(expression.Arguments.ToArray()) ?? expression;
 		}
 
 		private Expression OnMemberInitExpression(MemberInitExpression expression)
@@ -97,85 +158,66 @@ namespace NHibernate.Linq.Visitors
 			arguments.AddRange(expression.NewExpression.Arguments);
 			arguments.AddRange(expression.Bindings.Cast<MemberAssignment>().Select(x => x.Expression));
 
-			return TryInjectCollectionOwnerIntoProjection(arguments.ToArray()) ?? expression;
+			return TryConvertProjection(arguments.ToArray()) ?? expression;
 		}
 
-		private Expression TryInjectCollectionOwnerIntoProjection(params Expression[] expressions)
+		private Expression TryConvertProjection(params Expression[] expressions)
 		{
-			// TODO: will throw if multiple collections in projection
-			var expression =
-				expressions.OfType<MemberExpression>().SingleOrDefault(expr => GetCollectionQuerySource(expr) != null);
+			var indicies = new List<int>();
+			var list = new List<QuerySourceReferenceExpression>();
 
-			if (expression == null)
+			int n = 0;
+			expressions.ForEach(expression =>
 			{
+				var visitor = new QuerySourceVisitor();
+				visitor.VisitExpression(expression);
+
+				if (visitor.QuerySourceReferenceExpressions != null)
+				{
+					list.AddRange(visitor.QuerySourceReferenceExpressions);
+					indicies.Add(n + 1);
+				}
+
+				++n;
+			});
+
+			if (list.Count == 0 || list.Distinct().Count() > 1)
+			{
+				// different query sources are referenced, not supported
 				return null;
 			}
 
-			_index = Array.IndexOf(expressions, expression);
+			var querySourceExpression = list[0];
 
-			var querySource = GetCollectionQuerySource(expression);
+			var typeArgs = new List<System.Type>();
+			typeArgs.Add(querySourceExpression.ReferencedQuerySource.ItemType);
+			typeArgs.AddRange(expressions.Select(expr => expr.Type));
 
-			NewExpression projection = null;
-			if (Array.IndexOf(expressions, querySource) == -1)
-			{
-				// let's include collection owner into expression
+			var arguments = new List<Expression>();
+			
+			// Add collection owner to projection
+			arguments.Add(querySourceExpression);
+			arguments.AddRange(expressions);
 
-				var typeArgs = new List<System.Type>() { expression.Member.DeclaringType };
-				typeArgs.AddRange(expressions.Select(expr => expr.Type));
+			var projection = Expression.New(GetTupleConstructor(typeArgs.ToArray()), arguments);
 
-				var ctor = GetTupleConstructor(typeArgs.ToArray());
-
-				var ctorArguments = new List<Expression>() { querySource };
-				ctorArguments.AddRange(expressions);
-
-				projection = Expression.New(ctor, ctorArguments);
-
-				_collectionOwnerWasInjected = true;
-				_index++;
-			}
-			else
-			{
-				// let's use Tuple<> instead of anonymous type
-
-				var typeArgs = expressions.Select(expr => expr.Type).ToArray();
-				var ctor = GetTupleConstructor(typeArgs);
-				projection = Expression.New(ctor, expressions);
-			}
+			_indicies = indicies;
 
 			return projection;
 		}
 
 		private Expression CreateListTransformer(NewExpression expression)
 		{
-			if (expression == null || _index == -1)
-			{
-				return null;
-			}
-
 			var itemParameter = Expression.Parameter(expression.Type, "item");
+			var keySelector = Expression.Lambda(Expression.New(expression.Constructor,
+											 expression.Arguments.Select(
+												 (arg, n) =>
+												 _indicies.Contains(n)
+													 ? (Expression)Expression.Constant(null, arg.Type)
+													 : Expression.Property(itemParameter, GetTuplePropertyByIndex(expression.Type, n)))), itemParameter);
 
-			LambdaExpression keySelector = null;
-			if (expression.Arguments.Count == 2)
-			{
-				// TODO: collection owner may be not the first
-				keySelector = Expression.Lambda(Expression.MakeMemberAccess(itemParameter, expression.Type.GetProperty("First")), itemParameter);
-			}
-			else
-			{
-				// TODO:
-				throw new NotImplementedException();
-			}
-
-			LambdaExpression valueSelector = null;
-			if (expression.Arguments.Count == 2)
-			{
-				valueSelector = Expression.Lambda(Expression.MakeMemberAccess(itemParameter, expression.Type.GetProperty("Second")), itemParameter);
-			}
-			else
-			{
-				// TODO:
-				throw new NotImplementedException();
-			}
+			var valueSelector =
+				Expression.Lambda(Expression.Property(itemParameter, GetTuplePropertyByIndex(expression.Type, _indicies[0])), itemParameter);
 
 			return CreateListTransformer2(expression.Type, keySelector, valueSelector);
 		}
@@ -190,9 +232,30 @@ namespace NHibernate.Linq.Visitors
 					return typeof(Tuple<,,>).MakeGenericType(parameters).GetConstructor(parameters);
 				case 4:
 					return typeof(Tuple<,,,>).MakeGenericType(parameters).GetConstructor(parameters);
+				case 5:
+					return typeof(Tuple<,,,,>).MakeGenericType(parameters).GetConstructor(parameters);
 			}
 
-			throw new ArgumentException("Number of parameters should be greater than 1 and less than 5", "parameters");
+			throw new ArgumentException("Number of parameters should be greater than 1 and less than 6", "parameters");
+		}
+
+		private PropertyInfo GetTuplePropertyByIndex(System.Type type, int index)
+		{
+			switch (index)
+			{
+				case 0:
+					return type.GetProperty("First");
+				case 1:
+					return type.GetProperty("Second");
+				case 2:
+					return type.GetProperty("Third");
+				case 3:
+					return type.GetProperty("Forth");
+				case 4:
+					return type.GetProperty("Fifth");
+			}
+
+			throw new ArgumentOutOfRangeException("index");
 		}
 
 		private Expression CreateListTransformer2(System.Type elementType, LambdaExpression keySelector, LambdaExpression valueSelector)
@@ -206,7 +269,7 @@ namespace NHibernate.Linq.Visitors
 			var groupType = typeof(IGrouping<,>).MakeGenericType(tKey, tValue);
 			var groupParam = Expression.Parameter(groupType, "g");
 
-			var newCollection = GetResultSelector(tValue, groupParam);
+			var newCollection = GetResultSelector(groupParam);
 
 			var select = Expression.Call(null, SelectMethod.MakeGenericMethod(groupType, newCollection.Body.Type), groupBy, newCollection);
 
@@ -215,7 +278,7 @@ namespace NHibernate.Linq.Visitors
 			return result;
 		}
 
-		private LambdaExpression GetResultSelector(System.Type itemType, ParameterExpression inputParameter)
+		private LambdaExpression GetResultSelector(ParameterExpression inputParameter)
 		{
 			// .GroupBy(...).Select(g => new {g.Key.First, g.Key.Second, ..., new HashedSet<>(g.ToArray())})
 
@@ -254,66 +317,40 @@ namespace NHibernate.Linq.Visitors
 				throw new InvalidProgramException();
 			}
 
-			var keyProperty = Expression.Property(inputParameter, inputParameter.Type.GetProperty("Key"));
+			var keyPropertyExpression = Expression.Property(inputParameter, inputParameter.Type.GetProperty("Key"));
 
-			var result = new List<Expression>();
+			var expressions = keyPropertyExpression.Type.GetProperties()
+							.Select((_, n) => Expression.Property(keyPropertyExpression, GetTuplePropertyByIndex(keyPropertyExpression.Type, n)))
+							.Cast<Expression>()
+							.ToArray();
 
-			var tKey = inputParameter.Type.GetGenericArguments()[0];
-			var tValue = inputParameter.Type.GetGenericArguments()[1];
-
-			if (typeof(ITuple).IsAssignableFrom(tKey))
+			var groupToArrayExpression = GetGroupToArrayExpression(inputParameter);
+			_indicies.ForEach(index =>
 			{
-				result.AddRange(ExtractValuesFromTuple(keyProperty));
-			}
-			else
-			{
-				if (_collectionOwnerWasInjected)
-				{
-					// ignore keyProperty
-					return new [] { CreateCollection(tValue, inputParameter) };
-				}
+				// TODO: add support for .ToList()
+				expressions[index] = groupToArrayExpression;
+			});
 
-				return new [] { keyProperty, CreateCollection(tValue, inputParameter) };
-			}
-
-			return null;
+			return expressions.Skip(1).ToArray();
 		}
 
-		private Expression[] ExtractValuesFromTuple(MemberExpression expression)
+		private Expression GetGroupToArrayExpression(ParameterExpression inputParameter)
 		{
-			var type = expression.Type;
+			// TODO: what if result collection is non-generic?
+			var itemType = inputParameter.Type.GetGenericArguments()[1];
 
-			return null;
-		}
-
-		private Expression CreateCollection(System.Type itemType, ParameterExpression inputParameter)
-		{
 			var collectionType = GetConcreteCollectionType(itemType);
+			// TODO: bind to right constructor
 			var ctor = collectionType.GetConstructors().First(ci => ci.GetParameters().Length > 0);
 
 			var toArray = Expression.Call(null, ToArrayMethod.MakeGenericMethod(itemType), inputParameter);
 			return Expression.New(ctor, toArray);
 		}
 
-		private QuerySourceReferenceExpression GetCollectionQuerySource(MemberExpression expression)
-		{
-			if (IsCollectionType(expression.Type))
-			{
-				return expression.Expression as QuerySourceReferenceExpression;
-			}
-
-			return null;
-		}
-
 		private System.Type GetConcreteCollectionType(System.Type itemType)
 		{
 			// TODO: detect concrete collection type
 			return typeof (HashedSet<>).MakeGenericType(itemType);
-		}
-
-		private bool IsCollectionType(System.Type type)
-		{
-			return typeof (IEnumerable).IsAssignableFrom(type) && type != typeof (string);
 		}
 	}
 }
