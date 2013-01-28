@@ -51,6 +51,8 @@ namespace NHibernate.Linq
                 listTransformLambda = Expression.Lambda(invoked, listTransformLambda.Parameters.ToArray());
             }
 
+            listTransformLambda = Expression.Lambda(Expression.Convert(listTransformLambda.Body, typeof(object)), listTransformLambda.Parameters.ToArray());
+
             return listTransformLambda.Compile();
         }
     }

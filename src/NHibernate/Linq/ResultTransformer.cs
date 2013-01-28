@@ -22,7 +22,14 @@ namespace NHibernate.Linq
 
 		public object TransformTuple(object[] tuple, string[] aliases)
 		{
-			return _itemTransformation == null ? tuple : _itemTransformation.DynamicInvoke(new object[] {tuple});
+			if (_itemTransformation == null)
+			{
+				return tuple;
+			}
+
+			var func = _itemTransformation as Func<object[], object>;
+
+			return func != null ? func(tuple) : _itemTransformation.DynamicInvoke(new object[] {tuple});
 		}
 
 		public IList TransformList(IList collection)
@@ -33,7 +40,10 @@ namespace NHibernate.Linq
 			}
 
 			var toTransform = GetToTransform(collection);
-			var transformResult = _listTransformation.DynamicInvoke(toTransform);
+
+			var func = _listTransformation as Func<IEnumerable<object>, object>;
+
+			var transformResult = func != null ? func(toTransform) : _listTransformation.DynamicInvoke(toTransform);
 
 			var resultList = transformResult as IList;
 			return resultList ?? new List<object> { transformResult };
