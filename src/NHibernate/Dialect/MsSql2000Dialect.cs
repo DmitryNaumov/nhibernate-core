@@ -517,7 +517,7 @@ namespace NHibernate.Dialect
 			return currentToken == "n" && nextToken == "'"; // unicode character
 		}
 
-		public struct LockHintAppender
+		internal struct LockHintAppender
 		{
 			private const string UnescapedNameRegex = @"\w+";
 			private const string EscapedNameRegex = @"\[([^\]]|\]\])+\]";
